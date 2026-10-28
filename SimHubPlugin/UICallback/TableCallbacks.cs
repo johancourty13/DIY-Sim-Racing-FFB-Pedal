@@ -26,6 +26,7 @@ namespace DiyFfbPedal
                 PedalTabChange_last = DateTime.Now;
                 updateTheGuiFromConfig();
                 Plugin.ConfigService.RefreshConfigList();
+                Listbox_PedalConfig?.SelectActiveConfig();
             }
         }
 

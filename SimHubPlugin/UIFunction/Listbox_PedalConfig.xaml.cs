@@ -71,6 +71,16 @@ namespace DiyFfbPedal.UIFunction
                 }
             }
         }
+        // Select (and scroll to) the active config of the currently selected pedal tab
+        public void SelectActiveConfig()
+        {
+            if (_plugin == null || ItemList == null) return;
+            if (_plugin.Settings.table_selected >= _plugin._calculations.ConfigEditing.Length) return;
+            string activeFile = _plugin._calculations.ConfigEditing[_plugin.Settings.table_selected];
+            var activeItem = ItemList.FirstOrDefault(item => item.FileName == activeFile);
+            ConfigListBox.SelectedItem = activeItem;
+            if (activeItem != null) ConfigListBox.ScrollIntoView(activeItem);
+        }
         private void InitializePlugin(DIY_FFB_Pedal data)
         {
             if (data != null)
