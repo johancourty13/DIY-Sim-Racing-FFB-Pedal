@@ -909,13 +909,20 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   float motorRevolutionsPerSteps_lcl_fl32 = 1.0f / (float)calc_st->stepsPerMotorRevolution_u32;
   float pitch_mm = (float)config_st->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
   
-  // 1. Calculate physical sled boundaries in mm (relative to soft endstop min)
-  float minSledPos_mm = 0.0f;
-  float maxSledPos_mm = travelSteps_cnt * motorRevolutionsPerSteps_lcl_fl32 * pitch_mm;
-  
-  // actualSledPos_mm: The current physical position of the ESP stepper in mm
+  // 1. Calculate physical sled boundaries in mm.
+  // The kinematics (lengthPedalCHorizontal) are defined at the hardware home endstop, so the
+  // sled positions must include the offset of the soft min endstop (pedal start position).
+  // Without this offset, the pedal angles, the travel arc and thus the stiffness felt for a
+  // given max force change with the pedal start position.
+  float stepsToMm_fl32 = motorRevolutionsPerSteps_lcl_fl32 * pitch_mm;
+  float sledOffset_mm = (float)stepper->getSoftMinOffsetFromHome() * stepsToMm_fl32;
+  float sledTravel_mm = travelSteps_cnt * stepsToMm_fl32;
+  float minSledPos_mm = sledOffset_mm;
+  float maxSledPos_mm = sledOffset_mm + sledTravel_mm;
+
+  // actualSledPos_mm: The current physical position of the ESP stepper in mm (from home)
   float actualSledPosFraction_01 = stepper->getCurrentPositionFraction();
-  float actualSledPos_mm = actualSledPosFraction_01 * maxSledPos_mm;
+  float actualSledPos_mm = sledOffset_mm + actualSledPosFraction_01 * sledTravel_mm;
 
   // 2. Forward Kinematics: Angles at the boundaries and current physical state
   // travel-end angles only change with the configuration: cached, recomputed exactly whenever
@@ -1406,7 +1413,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   
   // Scale sled velocity limit to Task Space (Pedal Arc) velocity limit
   // FIXED: Converted maxSledPos_mm to meters (* 0.001f) to prevent dividing m by mm!
-  float maxSledPos_m = max(maxSledPos_mm * 0.001f, 0.0001f);
+  float maxSledPos_m = max(sledTravel_mm * 0.001f, 0.0001f);
   float maxPedalArcVel_mps = maxPhysicalSledVel_mps * (totalTravel_m / maxSledPos_m);
   float dynamicSpeedLimit = maxPedalArcVel_mps * velocityLimit_01;
   
@@ -1630,10 +1637,10 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   float endstopTravel_steps = endstopTravel_mm / (motorRevolutionsPerSteps_lcl_fl32 * pitch_mm);
 
   // Clamp the solved sled position to safe physical bounds (with dynamic expansion AND soft endstop)
-  targetSledPos_mm = constrain(targetSledPos_mm, 0.0f + minExt_mm, maxSledPos_mm + maxExt_mm + endstopTravel_mm);
+  targetSledPos_mm = constrain(targetSledPos_mm, minSledPos_mm + minExt_mm, maxSledPos_mm + maxExt_mm + endstopTravel_mm);
   
-  // 3. Convert target sled position (mm) back to absolute stepper steps
-  float targetPosSteps_fl32 = (targetSledPos_mm / (motorRevolutionsPerSteps_lcl_fl32 * pitch_mm)) + (float)calc_st->softEndstopMinStepperPos_i32;
+  // 3. Convert target sled position (mm, from home) back to absolute stepper steps
+  float targetPosSteps_fl32 = ((targetSledPos_mm - sledOffset_mm) / stepsToMm_fl32) + (float)calc_st->softEndstopMinStepperPos_i32;
 
   // Clamp to software limits (with dynamic expansion for high-frequency effects AND soft endstops)
   float finalTargetPos_fl32 = targetPosSteps_fl32;

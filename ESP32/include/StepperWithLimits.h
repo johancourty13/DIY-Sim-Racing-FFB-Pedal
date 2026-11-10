@@ -158,6 +158,11 @@ public:
     int32_t getLimitMin() const { return _endstopLimitMin; }
     int32_t getLimitMax() const { return _endstopLimitMax; }
     int32_t getTravelSteps() const { return _posMax - _posMin; }
+    // Offset of the soft min endstop (pedal start position) from the hardware home endstop.
+    // The pedal kinematics (lengthPedalCHorizontal) are defined at the home position,
+    // so geometry calculations must add this offset to soft-endstop-relative positions.
+    int32_t getSoftMinOffsetFromHome() const { return _posMin - _endstopLimitMin; }
+    int32_t getCurrentPositionFromHome() const { return getCurrentPosition() - _endstopLimitMin; }
     
     // --- Speed Getters ---
     int32_t getCurrentSpeedInHz();

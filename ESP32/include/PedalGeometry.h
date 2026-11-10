@@ -6,7 +6,8 @@
 
 
 static inline IRAM_ATTR_FLAG float sledPositionInMM(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32) {
-  float currentPos_fl32 = stepper_pstwl->getCurrentPositionFromMin();
+  // Sled position measured from the hardware home endstop, which is where the kinematics are defined
+  float currentPos_fl32 = stepper_pstwl->getCurrentPositionFromHome();
   return currentPos_fl32 * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
 }
 
@@ -191,12 +192,14 @@ static inline IRAM_ATTR_FLAG float pedalArcPercentage(StepperWithLimits* stepper
   // steps to mm
   float stepsToMm_fl32 = motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
 
-  float minSledPos_mm = 0.0f;
-  float maxSledPos_mm = travelSteps_cnt * stepsToMm_fl32;
+  // sled positions measured from the hardware home endstop (kinematics reference)
+  float sledOffset_mm = (float)stepper_pstwl->getSoftMinOffsetFromHome() * stepsToMm_fl32;
+  float minSledPos_mm = sledOffset_mm;
+  float maxSledPos_mm = sledOffset_mm + travelSteps_cnt * stepsToMm_fl32;
 
   // actualSledPos_mm: The current physical position of the ESP stepper in mm
   float actualSledPosFraction_01 = stepper_pstwl->getCurrentPositionFraction();
-  float actualSledPos_mm = actualSledPosFraction_01 * maxSledPos_mm;
+  float actualSledPos_mm = sledOffset_mm + actualSledPosFraction_01 * (maxSledPos_mm - minSledPos_mm);
 
   // 2. Forward Kinematics: Angles at the boundaries and current physical state
   // travel-end angles only change with the configuration: cached (exact)
