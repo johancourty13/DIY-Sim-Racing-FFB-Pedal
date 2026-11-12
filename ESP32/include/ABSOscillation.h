@@ -26,6 +26,20 @@ enum class TrackCondition
 static const float s_absFadeInTime_s_fl32 = 0.005f;
 static const float s_absFadeOutTime_s_fl32 = 0.015f;
 
+// absForceOrTarvelBit_u8 bits: bit 0 selects force (0) or travel (1) modulation,
+// bit 1 scales the amplitude with the current pedal force (like the brake pressure).
+// Older plugins only send 0 or 1, so their behaviour is unchanged.
+#define ABS_MODULATE_TRAVEL_BIT_U8 0x01
+#define ABS_SCALE_WITH_FORCE_BIT_U8 0x02
+// Force scaling: the amplitude setting applies at max force, the amplitude follows the
+// pedal force down to this floor (the effect never vanishes completely).
+static const float s_absForceScaleMin_01_fl32 = 0.2f;
+// Low-pass of the force used for the scaling, slower than the ABS vibration so the
+// vibration itself does not modulate its own amplitude.
+static const float s_absForceScaleTau_s_fl32 = 0.1f;
+// Pulse waveform: share of the period used by the fast kick back
+static const float s_absPulseRiseShare_01_fl32 = 0.12f;
+
 class ABSOscillation {
 private:
   volatile long timeLastTriggerMillis_i32;  // written Core0 (trigger), read Core1 (forceOffset)
@@ -35,6 +49,8 @@ private:
   float phase_01_fl32 = 0.0f;
   // Fade envelope [0, 1] applied to the waveform
   float envelope_01_fl32 = 0.0f;
+  // low-pass filtered force scale [s_absForceScaleMin_01_fl32, 1]
+  float forceScale_01_fl32 = 1.0f;
 
 public:
   float absOscillationForceOffset_fl32 = 0.0f;
@@ -93,10 +109,24 @@ public:
 
     // abs amplitude, given in [0, 1] of the force / travel range
     float absAmp_fl32 = calcVars_st->absAmplitude_fl32 * envelope_01_fl32;
+
+    // optional: amplitude proportional to the pedal force (brake pressure)
+    if (absForceOrTarvelBit_u8 & ABS_SCALE_WITH_FORCE_BIT_U8)
+    {
+      float forceScaleTarget_01_fl32 = 1.0f;
+      if (calcVars_st->forceMax_fl32 > 0.1f)
+      {
+        forceScaleTarget_01_fl32 = calcVars_st->currentForceReading_fl32 / calcVars_st->forceMax_fl32;
+      }
+      forceScaleTarget_01_fl32 = constrain(forceScaleTarget_01_fl32, s_absForceScaleMin_01_fl32, 1.0f);
+      float alpha_fl32 = dt_s_fl32 / (s_absForceScaleTau_s_fl32 + dt_s_fl32);
+      forceScale_01_fl32 += alpha_fl32 * (forceScaleTarget_01_fl32 - forceScale_01_fl32);
+      absAmp_fl32 *= forceScale_01_fl32;
+    }
     float absAmplForce_fl32 = absAmp_fl32 * calcVars_st->forceRange_fl32;
     float absAmplPosition_fl32 = absAmp_fl32 * calcVars_st->stepperPosRange_fl32;
 
-    // waveform in [-1, 1] (sine) or [-0.5, 0.5] (sawtooth), as before
+    // waveform in [-1, 1] (sine), [-0.5, 0.5] (sawtooth) or [-1, 0] (pulse)
     float waveform_fl32 = 0.0f;
     switch (absPattern_u8)
     {
@@ -111,12 +141,26 @@ public:
           waveform_fl32 = phase_01_fl32 - 0.5f;
         }
         break;
+      case 2:
+        // pulse pattern, like an ABS pump: a fast kick back against the foot, then a
+        // smooth return. Continuous at the period boundary (starts and ends at 0 with
+        // zero slope), so only the kick itself is sharp.
+        if (phase_01_fl32 < s_absPulseRiseShare_01_fl32)
+        {
+          waveform_fl32 = -isin(90.0f * phase_01_fl32 / s_absPulseRiseShare_01_fl32);
+        }
+        else
+        {
+          float decay_01_fl32 = 1.0f - (phase_01_fl32 - s_absPulseRiseShare_01_fl32) / (1.0f - s_absPulseRiseShare_01_fl32);
+          waveform_fl32 = -decay_01_fl32 * decay_01_fl32;
+        }
+        break;
       default:
         break;
     }
 
     // apply the oscillation to either force or position based on the configuration bit
-    switch (absForceOrTarvelBit_u8)
+    switch (absForceOrTarvelBit_u8 & ABS_MODULATE_TRAVEL_BIT_U8)
     {
       case 0:
         absOscillationForceOffset_fl32 = absAmplForce_fl32 * waveform_fl32;

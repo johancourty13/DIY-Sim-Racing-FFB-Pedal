@@ -32,9 +32,14 @@
                     <ComboBox x:Name="AbsPattern" SelectionChanged="AbsPattern_SelectionChanged" Width="90" Height="20" FontSize="10" SelectedIndex="0" Margin="8,0,0,0" BorderThickness="0,0,0,0">
                         <ComboBoxItem Content="Sine"/>
                         <ComboBoxItem Content="Sawtooth"/>
+                        <ComboBoxItem Content="Pulse"/>
                     </ComboBox>
                     <Button Style="{StaticResource ModernPillButton}" x:Name="btn_testABS" Content="{SLoc DIYFFBPedalPlugin_TextEffectABSTestABS, 'Test ABS/TC'}" Click="btn_testABS_Click" Height="20" FontWeight="Bold" FontSize="9" Width="85" HorizontalAlignment="Left" Margin="15,0,0,0" ToolTip="Click for testing ABS/TC, click again to cancel" MinHeight="20" FontFamily="Arial" Padding="0,0,0,0" VerticalContentAlignment="Center"/>
                     <CheckBox Width="30" x:Name="TestAbs_check" IsEnabled="False" Height="20" FontSize="8" Foreground="White" Content="" HorizontalAlignment="Left" Margin="4,0,0,0"/>
+                    <StackPanel Height="20" Width="230" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0">
+                        <styles:SHToggleButton x:Name="AbsScaleWithForce_check" Content="" Checked="AbsScaleWithForce_check_Checked" Unchecked="AbsScaleWithForce_check_Unchecked" IsChecked="False" FontSize="10" Width="35" Height="15" HorizontalAlignment="Left" FontFamily="Arial" ToolTip="Scales the ABS amplitude with the pedal force, like the brake pressure: the amplitude setting applies at max force, down to 20 % of it when braking lightly. Requires the matching pedal firmware." Margin="0,0,0,0" />
+                        <Label Content="Amplitude follows pedal force" Height="20" Width="180" Padding="0,0,0,0" VerticalContentAlignment="Center" FontFamily="Arial" HorizontalAlignment="Left" FontSize="10" Margin="6,0,0,0"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <StackPanel Height="36" Width="648" Orientation="Horizontal" Margin="0,2,0,0">
