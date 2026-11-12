@@ -1580,8 +1580,26 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   // natively in the Pedal Task Space (Arc length). We must translate this 
   // target back into non-linear physical stepper steps via Inverse Kinematics.
 
+  // 0. Effects at the endstop (ABS, vibrations): in the soft endstop the effect force only acts
+  // against the endstop stiffness, so it moves the pedal by a fraction of a mm, and once the model
+  // is clamped at the travel limit it does nothing at all. Inside the endstop the effect is
+  // therefore superimposed kinematically on the target: the displacement it produces on the force
+  // curve just before the endstop, so the effect feels the same at the endstop as before it.
+  // Faded in over the first part of the endstop to keep the target continuous.
+  float endstopEffectPos_01 = 0.0f;
+  if ((totalTravel_m > 0.0001f) && (g_vModelPos_01 > 1.0f)) {
+      const float ENDSTOP_EFFECT_FADE_M = 0.002f; // 2 mm of endstop penetration
+      float endstopEffectWeight_01 = constrain((g_vModelPos_01 - 1.0f) * totalTravel_m / ENDSTOP_EFFECT_FADE_M, 0.0f, 1.0f);
+      float effectDisplacement_m = g_smoothedEffectPos_m;
+      if (localStiffness_N_m > 1.0f) {
+          effectDisplacement_m += (effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG) / localStiffness_N_m;
+      }
+      // same safety limit as the dynamic expansion below: +/- 5 % of the travel
+      endstopEffectPos_01 = constrain(endstopEffectWeight_01 * effectDisplacement_m / totalTravel_m, -0.05f, 0.05f);
+  }
+
   // 1. Map the normalized task space target [0.0, 1.0] to a target pedal angle
-  float targetPedalAngle_deg = angleAtMinSled_deg + g_vModelPos_01 * (angleAtMaxSled_deg - angleAtMinSled_deg);
+  float targetPedalAngle_deg = angleAtMinSled_deg + (g_vModelPos_01 + endstopEffectPos_01) * (angleAtMaxSled_deg - angleAtMinSled_deg);
   float targetPedalAngle_rad = targetPedalAngle_deg * DEG_TO_RAD_FL32;
 
   // 2. Analytical Inverse Kinematics (O(1), perfect precision, absolutely zero hysteresis)
@@ -1615,7 +1633,9 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
 
   // Limit dynamic expansion to a maximum of +/- 5% of total travel for safety
   float limitExt = travelSteps_cnt * 0.05f;
-  float maxExt = constrain(max(0.0f, effectOffsets_st.forceOffset_Steps_fl32), 0.0f, limitExt);
+  // positive endstop effect displacement (deeper than the endstop travel) extends the limit too
+  float endstopEffectExt_steps = max(0.0f, endstopEffectPos_01) * travelSteps_cnt;
+  float maxExt = constrain(max(0.0f, effectOffsets_st.forceOffset_Steps_fl32) + endstopEffectExt_steps, 0.0f, limitExt);
   float minExt = constrain(min(0.0f, effectOffsets_st.forceOffset_Steps_fl32), -limitExt, 0.0f);
 
   // Calculate equivalent expansion in millimeters for the sled position clamp
