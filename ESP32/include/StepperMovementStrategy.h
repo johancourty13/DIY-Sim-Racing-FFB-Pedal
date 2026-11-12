@@ -1060,12 +1060,35 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
     contactDampedPilotForce_N = 0.0f;
   }
 
-  float externalForce_N = contactDampedPilotForce_N + (effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG) + effectInjectedForce_N;
+  // Effects at the end of travel (ABS, vibrations): once the pedal reaches the end of the force
+  // curve, the effect force only acts against the (very stiff) soft endstop, or against the
+  // travel clamp when the foot pushes harder than the max force. It then moves the pedal by a
+  // fraction of a mm, or not at all (a kick back against the foot cannot beat the foot force).
+  // From 1 mm before the end of travel on, the effect is therefore moved from the force domain
+  // to the position domain: the effect force is faded out of the model and the displacement it
+  // would produce on the force curve is superimposed on the target (see step 15).
+  const float END_EFFECT_FADE_M = 0.001f;  // fade over the last 1 mm of travel
+  const float END_EFFECT_TAU_S = 0.010f;   // smoothing, so the transition never steps
+  static float s_endEffectWeight_01 = 0.0f;
+  float endEffectWeightTarget_01 = 0.0f;
+  if (totalTravel_m > 0.0001f) {
+      endEffectWeightTarget_01 = constrain(((g_vModelPos_01 - 1.0f) * totalTravel_m / END_EFFECT_FADE_M) + 1.0f, 0.0f, 1.0f);
+  }
+  float endEffectAlpha_01 = 1.0f - expf(-dt_s / END_EFFECT_TAU_S);
+  s_endEffectWeight_01 += endEffectAlpha_01 * (endEffectWeightTarget_01 - s_endEffectWeight_01);
+  const float effectForceScale_01 = 1.0f - s_endEffectWeight_01;
+
+  float externalForce_N = contactDampedPilotForce_N
+                        + effectForceScale_01 * ((effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG) + effectInjectedForce_N);
 
   // --- 7. DYNAMIC TRAVEL LIMITS ---
+  // the expansion follows the share of the effect still applied as force
+  EffectOffsets_t modelEffectOffsets_st = effectOffsets_st;
+  modelEffectOffsets_st.forceOffset_kg_fl32 *= effectForceScale_01;
+  modelEffectOffsets_st.forceOffset_Steps_fl32 *= effectForceScale_01;
   float lowerTravelLimit_01 = 0.0f;
   float upperTravelLimit_01 = 1.0f;
-  CalcDynamicTravelLimits(travelSteps_cnt, localStiffness_kg_step, effectOffsets_st, lowerTravelLimit_01, upperTravelLimit_01);
+  CalcDynamicTravelLimits(travelSteps_cnt, localStiffness_kg_step, modelEffectOffsets_st, lowerTravelLimit_01, upperTravelLimit_01);
 
   // --- 8. SOFT ENDSTOP CALCULATION ---
   float currentStiffness_N_m = localStiffness_N_m;
@@ -1580,22 +1603,37 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   // natively in the Pedal Task Space (Arc length). We must translate this 
   // target back into non-linear physical stepper steps via Inverse Kinematics.
 
-  // 0. Effects at the endstop (ABS, vibrations): in the soft endstop the effect force only acts
-  // against the endstop stiffness, so it moves the pedal by a fraction of a mm, and once the model
-  // is clamped at the travel limit it does nothing at all. Inside the endstop the effect is
-  // therefore superimposed kinematically on the target: the displacement it produces on the force
-  // curve just before the endstop, so the effect feels the same at the endstop as before it.
-  // Faded in over the first part of the endstop to keep the target continuous.
-  float endstopEffectPos_01 = 0.0f;
-  if ((totalTravel_m > 0.0001f) && (g_vModelPos_01 > 1.0f)) {
-      const float ENDSTOP_EFFECT_FADE_M = 0.002f; // 2 mm of endstop penetration
-      float endstopEffectWeight_01 = constrain((g_vModelPos_01 - 1.0f) * totalTravel_m / ENDSTOP_EFFECT_FADE_M, 0.0f, 1.0f);
-      float effectDisplacement_m = g_smoothedEffectPos_m;
-      if (localStiffness_N_m > 1.0f) {
-          effectDisplacement_m += (effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG) / localStiffness_N_m;
+  // 0. Effects at the end of travel: superimpose the share of the effect taken out of the force
+  // domain (see step 6) as a displacement, the one it produces on the force curve just before
+  // the end of travel, so the effect feels the same there as before it.
+  // Force effects: the displacement comes from a shadow mass-spring-damper with the model's own
+  // mass, local stiffness and damping, driven by the effect force alone. A static F / k would
+  // be several times larger than the response of the model before the end of travel, where the
+  // virtual mass attenuates the vibration.
+  static float s_endEffectX_m = 0.0f;
+  static float s_endEffectV_mps = 0.0f;
+  {
+      float effectForce_N = effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG;
+      float k_N_m = max(localStiffness_N_m, 1.0f);
+      float m_kg = max(baseMass_kg, 0.05f);
+      float c_Ns_m = dampingRatio_zeta * 2.0f * sqrtf(m_kg * k_N_m);
+      // semi-implicit Euler, sub-stepped to stay well inside its stability limit
+      float omega_rad_s = sqrtf(k_N_m / m_kg);
+      int subSteps_i = constrain((int)ceilf(dt_s * omega_rad_s / 0.2f), 1, 20);
+      float h_s = dt_s / (float)subSteps_i;
+      for (int i = 0; i < subSteps_i; i++) {
+          float acc_mps2 = (effectForce_N - k_N_m * s_endEffectX_m - c_Ns_m * s_endEffectV_mps) / m_kg;
+          s_endEffectV_mps += acc_mps2 * h_s;
+          s_endEffectX_m += s_endEffectV_mps * h_s;
       }
+      // safety: never more than the static displacement range of the effect limit
+      s_endEffectX_m = constrain(s_endEffectX_m, -0.05f * totalTravel_m, 0.05f * totalTravel_m);
+  }
+  float endstopEffectPos_01 = 0.0f;
+  if ((totalTravel_m > 0.0001f) && (s_endEffectWeight_01 > 0.0f)) {
+      float effectDisplacement_m = g_smoothedEffectPos_m + s_endEffectX_m;
       // same safety limit as the dynamic expansion below: +/- 5 % of the travel
-      endstopEffectPos_01 = constrain(endstopEffectWeight_01 * effectDisplacement_m / totalTravel_m, -0.05f, 0.05f);
+      endstopEffectPos_01 = constrain(s_endEffectWeight_01 * effectDisplacement_m / totalTravel_m, -0.05f, 0.05f);
   }
 
   // 1. Map the normalized task space target [0.0, 1.0] to a target pedal angle
