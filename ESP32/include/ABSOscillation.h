@@ -3,6 +3,7 @@
 #include "DiyActivePedal_types.h"
 #include <MovingAverageFilter.h>
 #include "FastTrig.h"
+#include "esp_timer.h"
 
 static const long s_absActiveTimePerTriggerMillis_i32 = 100;
 static const long s_rpmActiveTimePerTriggerMillis_i32 = 100;
@@ -20,11 +21,20 @@ enum class TrackCondition
   VeryWet,
   ExtremelyWet
 };
+// ABS fade times: a short fade-in keeps the onset crisp without a force step,
+// a longer fade-out ends the vibration smoothly instead of cutting it mid-cycle.
+static const float s_absFadeInTime_s_fl32 = 0.005f;
+static const float s_absFadeOutTime_s_fl32 = 0.015f;
+
 class ABSOscillation {
 private:
   volatile long timeLastTriggerMillis_i32;  // written Core0 (trigger), read Core1 (forceOffset)
-  long absTimeMillis_i32;
-  long lastCallTimeMillis_i32 = 0;
+  int64_t lastCallTimeUs_i64 = 0;
+  // Phase in periods [0, 1). Integrated from the frequency, so a frequency change
+  // (track condition) or a retrigger never makes the waveform jump.
+  float phase_01_fl32 = 0.0f;
+  // Fade envelope [0, 1] applied to the waveform
+  float envelope_01_fl32 = 0.0f;
 
 public:
   float absOscillationForceOffset_fl32 = 0.0f;
@@ -41,103 +51,86 @@ public:
   
   void IRAM_ATTR_FLAG forceOffset(DapCalculationVariables_t* calcVars_st, uint8_t absPattern_u8, uint8_t absForceOrTarvelBit_u8)
   {
+    // Microsecond timing: the pedal loop runs every ~600 us, so a millis() based
+    // waveform was a 1 ms staircase, sampled unevenly (1 or 2 loops per step),
+    // which added a buzz on top of the ABS vibration.
+    int64_t timeNowUs_i64 = esp_timer_get_time();
+    float dt_s_fl32 = (lastCallTimeUs_i64 > 0) ? (float)(timeNowUs_i64 - lastCallTimeUs_i64) * 1e-6f : 0.0f;
+    dt_s_fl32 = constrain(dt_s_fl32, 0.0f, 0.01f);
+    lastCallTimeUs_i64 = timeNowUs_i64;
 
-    long timeNowMillis = millis();
-    float timeSinceTrigger_fl32 = (timeNowMillis - timeLastTriggerMillis_i32);
-    
-    
+    long timeSinceTriggerMillis_i32 = millis() - timeLastTriggerMillis_i32;
+    bool absActive_b = (timeSinceTriggerMillis_i32 <= s_absActiveTimePerTriggerMillis_i32);
 
-    if (timeSinceTrigger_fl32 > s_absActiveTimePerTriggerMillis_i32)
+    // fade envelope
+    if (absActive_b)
     {
-      absTimeMillis_i32 = 0;
-      
-      // --- DECAY LOGIC (Max 10 steps) ---
-      float posDecayStep = 10.0f;
-      float forceDecayStep = 0.1f; // Etwa 0.5 kg Abbau pro Zyklus für einen sanften Übergang
-
-      // Decay Position Offset towards 0
-      if (absOscillationPositionOffset_fl32 > posDecayStep) {
-        absOscillationPositionOffset_fl32 -= posDecayStep;
-      } else if (absOscillationPositionOffset_fl32 < -posDecayStep) {
-        absOscillationPositionOffset_fl32 += posDecayStep;
-      } else {
-        absOscillationPositionOffset_fl32 = 0.0f;
-      }
-
-      // Decay Force Offset towards 0
-      if (absOscillationForceOffset_fl32 > forceDecayStep) {
-        absOscillationForceOffset_fl32 -= forceDecayStep;
-      } else if (absOscillationForceOffset_fl32 < -forceDecayStep) {
-        absOscillationForceOffset_fl32 += forceDecayStep;
-      } else {
-        absOscillationForceOffset_fl32 = 0.0f;
-      }
+      envelope_01_fl32 += dt_s_fl32 / s_absFadeInTime_s_fl32;
     }
     else
     {
-      //frequency depend on road condition
-      float absFreq_fl32 = calcVars_st->absFrequency_fl32;
-      absFreq_fl32 = absFreq_fl32*(1.0f + ((float)calcVars_st->trackCondition_u8) * 0.1f );
-      absFreq_fl32 = constrain(absFreq_fl32, 0.0f, 50.0f);
-      
-      float absForceOffsetLocal_fl32 = 0.0f;
-      absTimeMillis_i32 += timeNowMillis - lastCallTimeMillis_i32;
-      float absTimeSeconds_fl32 = absTimeMillis_i32 * 0.001f;
+      envelope_01_fl32 -= dt_s_fl32 / s_absFadeOutTime_s_fl32;
+    }
+    envelope_01_fl32 = constrain(envelope_01_fl32, 0.0f, 1.0f);
 
-      // abs amplitude
-      float absAmp_fl32 = calcVars_st->absAmplitude_fl32; // amplitude is given in interal [0, 1] already, so no need to scale it.
-      float absAmplForce_fl32 = absAmp_fl32 * calcVars_st->forceRange_fl32; 
-      float absAmplPosition_fl32 = absAmp_fl32 * calcVars_st->stepperPosRange_fl32; 
-
-      // compute the oscillation offset based on the selected pattern
-      float sineArgInDeg_fl32;
-      switch (absPattern_u8)
-      {
-        case 0:
-          // sine wave pattern
-          sineArgInDeg_fl32 = 360.0f * absFreq_fl32 * absTimeSeconds_fl32;
-          absForceOffsetLocal_fl32 =  isin(sineArgInDeg_fl32);
-          break;
-        case 1:
-          // sawtooth pattern
-          if (calcVars_st->absFrequency_fl32 > 0.0f)
-          {
-            absForceOffsetLocal_fl32 = fmodf(absTimeSeconds_fl32, 1.0f / (float)absFreq_fl32) * (float)absFreq_fl32;
-            absForceOffsetLocal_fl32 -= 0.5f; // make it symmetrical around 0
-          }
-          break;
-        default:
-          break;
-      }
-      
-      // apply the computed oscillation offset to either force or position based on the configuration bit
-      switch (absForceOrTarvelBit_u8)
-      {
-        case 0:
-          absOscillationForceOffset_fl32 = absAmplForce_fl32 * absForceOffsetLocal_fl32;
-          absOscillationPositionOffset_fl32 = 0.0f;
-          break;
-        case 1:
-          absOscillationForceOffset_fl32 = 0.0f;
-          absOscillationPositionOffset_fl32 = absAmplPosition_fl32 * absForceOffsetLocal_fl32;
-          break;
-        default:
-          absOscillationForceOffset_fl32 = 0.0f;
-          absOscillationPositionOffset_fl32 = 0.0f; 
-          break;
-      }
-
-      //absOscillationForceOffset_fl32 = absAmplForce_fl32 * absForceOffsetLocal_fl32;
-      //absOscillationPositionOffset_fl32 = absAmplPosition_fl32 * absForceOffsetLocal_fl32;
-      
+    if (envelope_01_fl32 <= 0.0f)
+    {
+      // idle: restart the next ABS event at the beginning of a period
+      phase_01_fl32 = 0.0f;
+      absOscillationForceOffset_fl32 = 0.0f;
+      absOscillationPositionOffset_fl32 = 0.0f;
+      return;
     }
 
-    lastCallTimeMillis_i32 = timeNowMillis;
+    // frequency depends on the road condition
+    float absFreq_fl32 = calcVars_st->absFrequency_fl32;
+    absFreq_fl32 = absFreq_fl32 * (1.0f + ((float)calcVars_st->trackCondition_u8) * 0.1f);
+    absFreq_fl32 = constrain(absFreq_fl32, 0.0f, 50.0f);
 
-    // ActiveSerial->printf("%0.3f, %0.3f\n", absForceOffset, absPosOffset);
+    // phase integration (keeps running during the fade-out)
+    phase_01_fl32 += absFreq_fl32 * dt_s_fl32;
+    phase_01_fl32 -= floorf(phase_01_fl32);
 
-    return;
-    
+    // abs amplitude, given in [0, 1] of the force / travel range
+    float absAmp_fl32 = calcVars_st->absAmplitude_fl32 * envelope_01_fl32;
+    float absAmplForce_fl32 = absAmp_fl32 * calcVars_st->forceRange_fl32;
+    float absAmplPosition_fl32 = absAmp_fl32 * calcVars_st->stepperPosRange_fl32;
+
+    // waveform in [-1, 1] (sine) or [-0.5, 0.5] (sawtooth), as before
+    float waveform_fl32 = 0.0f;
+    switch (absPattern_u8)
+    {
+      case 0:
+        // sine wave pattern
+        waveform_fl32 = isin(360.0f * phase_01_fl32);
+        break;
+      case 1:
+        // sawtooth pattern, symmetrical around 0
+        if (absFreq_fl32 > 0.0f)
+        {
+          waveform_fl32 = phase_01_fl32 - 0.5f;
+        }
+        break;
+      default:
+        break;
+    }
+
+    // apply the oscillation to either force or position based on the configuration bit
+    switch (absForceOrTarvelBit_u8)
+    {
+      case 0:
+        absOscillationForceOffset_fl32 = absAmplForce_fl32 * waveform_fl32;
+        absOscillationPositionOffset_fl32 = 0.0f;
+        break;
+      case 1:
+        absOscillationForceOffset_fl32 = 0.0f;
+        absOscillationPositionOffset_fl32 = absAmplPosition_fl32 * waveform_fl32;
+        break;
+      default:
+        absOscillationForceOffset_fl32 = 0.0f;
+        absOscillationPositionOffset_fl32 = 0.0f;
+        break;
+    }
   }
 };
 
