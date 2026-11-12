@@ -65,7 +65,10 @@ public:
     timeLastTriggerMillis_i32 = millis();
   }
   
-  void IRAM_ATTR_FLAG forceOffset(DapCalculationVariables_t* calcVars_st, uint8_t absPattern_u8, uint8_t absForceOrTarvelBit_u8)
+  // Forced inline into the caller (the pedal task) instead of IRAM_ATTR_FLAG: a separate IRAM
+  // copy of this header-defined function fails to link on the ESP32-S3
+  // ("dangerous relocation: l32r: literal placed after use").
+  inline __attribute__((always_inline)) void forceOffset(DapCalculationVariables_t* calcVars_st, uint8_t absPattern_u8, uint8_t absForceOrTarvelBit_u8)
   {
     // Microsecond timing: the pedal loop runs every ~600 us, so a millis() based
     // waveform was a 1 ms staircase, sampled unevenly (1 or 2 loops per step),
