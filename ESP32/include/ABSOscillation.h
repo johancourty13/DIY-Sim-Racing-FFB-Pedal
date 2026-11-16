@@ -86,6 +86,7 @@ public:
 
       // abs amplitude
       float absAmp_fl32 = calcVars_st->absAmplitude_fl32; // amplitude is given in interal [0, 1] already, so no need to scale it.
+      absAmp_fl32 *= constrain(calcVars_st->absSpeedScale_fl32, 0.0f, 1.0f); // vehicle speed scaling (plugin side)
       float absAmplForce_fl32 = absAmp_fl32 * calcVars_st->forceRange_fl32; 
       float absAmplPosition_fl32 = absAmp_fl32 * calcVars_st->stepperPosRange_fl32; 
 
