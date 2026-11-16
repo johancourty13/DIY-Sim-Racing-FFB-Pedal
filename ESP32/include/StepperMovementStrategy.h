@@ -922,9 +922,12 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   // the sled travel or a pedal length changes (identical values to a direct call)
   static PedalAngleCache_t s_angleAtMinSledCache_st;
   static PedalAngleCache_t s_angleAtMaxSledCache_st;
-  float angleAtMinSled_deg = pedalInclineAngleDegCached(minSledPos_mm, config_st, s_angleAtMinSledCache_st);
-  float angleAtMaxSled_deg = pedalInclineAngleDegCached(maxSledPos_mm, config_st, s_angleAtMaxSledCache_st);
-  float currentAngle_deg = pedalInclineAngleDeg(actualSledPos_mm, config_st);
+  // The geometry (lengthPedalCHorizontal) refers to the physical min endstop, the sled positions
+  // above to the start of the configured travel: add the offset for the kinematics.
+  const float sledOffset_mm = sledOffsetFromHardMinInMM(stepper, config_st, motorRevolutionsPerSteps_lcl_fl32);
+  float angleAtMinSled_deg = pedalInclineAngleDegCached(sledOffset_mm + minSledPos_mm, config_st, s_angleAtMinSledCache_st);
+  float angleAtMaxSled_deg = pedalInclineAngleDegCached(sledOffset_mm + maxSledPos_mm, config_st, s_angleAtMaxSledCache_st);
+  float currentAngle_deg = pedalInclineAngleDeg(sledOffset_mm + actualSledPos_mm, config_st);
 
   // 3. Convert Angles to Arc Length (Task Space in meters)
   // Lever arm is lower pedal plate (B) + upper pedal plate (D)
@@ -1610,7 +1613,8 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   if (dx_squared_mm2 > 0.0f) {
       // We use the positive root because the sled (B) is horizontally further away than the pedal arm (C)
       float c_hor_mm = Cx_mm + sqrtf(dx_squared_mm2);
-      targetSledPos_mm = c_hor_mm - c_hor_0_mm;
+      // back to the travel-start reference (the geometry refers to the physical min endstop)
+      targetSledPos_mm = c_hor_mm - c_hor_0_mm - sledOffset_mm;
   }
 
   // Limit dynamic expansion to a maximum of +/- 5% of total travel for safety

@@ -5,8 +5,24 @@
 #include "FastTrig.h"
 
 
+/**
+ * Distance (mm) between the physical min endstop (home) and the start of the configured pedal
+ * travel (pedalStartPosition). The pedal geometry (lengthPedalCHorizontal) is defined with the
+ * sled at the physical min endstop (see the kinematics tab of the SimHub plugin), so every sled
+ * position passed to pedalInclineAngleDeg() / convertToPedalForce() must include this offset.
+ * Without it the pedal angle, and hence the loadcell -> pedal force gain, was computed as if the
+ * travel started at the endstop: with a pedal start position > 0 the measured pedal force was
+ * underestimated (e.g. ~7 % at 60 % start position) and the force needed to reach the end of
+ * travel depended on the configured travel range.
+ */
+static inline IRAM_ATTR_FLAG float sledOffsetFromHardMinInMM(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32) {
+  float offsetSteps_fl32 = (float)(stepper_pstwl->getMinPosition() - stepper_pstwl->getLimitMin());
+  return offsetSteps_fl32 * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
+}
+
+// sled position in mm measured from the physical min endstop (geometry reference)
 static inline IRAM_ATTR_FLAG float sledPositionInMM(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32) {
-  float currentPos_fl32 = stepper_pstwl->getCurrentPositionFromMin();
+  float currentPos_fl32 = (float)(stepper_pstwl->getCurrentPosition() - stepper_pstwl->getLimitMin());
   return currentPos_fl32 * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
 }
 
@@ -202,9 +218,11 @@ static inline IRAM_ATTR_FLAG float pedalArcPercentage(StepperWithLimits* stepper
   // travel-end angles only change with the configuration: cached (exact)
   static PedalAngleCache_t s_angleAtMinSledCache_st;
   static PedalAngleCache_t s_angleAtMaxSledCache_st;
-  float angleAtMinSled_deg = pedalInclineAngleDegCached(minSledPos_mm, config_pst, s_angleAtMinSledCache_st);
-  float angleAtMaxSled_deg = pedalInclineAngleDegCached(maxSledPos_mm, config_pst, s_angleAtMaxSledCache_st);
-  float currentAngle_deg = pedalInclineAngleDeg(actualSledPos_mm, config_pst);
+  // geometry reference is the physical min endstop: add the travel start offset
+  const float sledOffset_mm = sledOffsetFromHardMinInMM(stepper_pstwl, config_pst, motorRevolutionsPerStep_fl32);
+  float angleAtMinSled_deg = pedalInclineAngleDegCached(sledOffset_mm + minSledPos_mm, config_pst, s_angleAtMinSledCache_st);
+  float angleAtMaxSled_deg = pedalInclineAngleDegCached(sledOffset_mm + maxSledPos_mm, config_pst, s_angleAtMaxSledCache_st);
+  float currentAngle_deg = pedalInclineAngleDeg(sledOffset_mm + actualSledPos_mm, config_pst);
 
   float angleDelta = angleAtMaxSled_deg - angleAtMinSled_deg;
   if (fabsf(angleDelta) < 0.001f) {

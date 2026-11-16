@@ -2867,7 +2867,9 @@ void IRAM_ATTR_FLAG pedalUpdateTask(void *pvParameters) {
         float targetSledPos_mm_fl32 =
             s_identRestSledPos_mm_fl32 +
             arcOffset_m_fl32 / s_identArcPerSledMm_m_fl32;
-        Position_Next_fl32 = (float)stepper->getMinPosition() +
+        // sled positions are measured from the physical min endstop
+        // (sledPositionInMM)
+        Position_Next_fl32 = (float)stepper->getLimitMin() +
                              targetSledPos_mm_fl32 / sledMmPerStep_fl32;
         positionWithoutEffect = (int32_t)Position_Next_fl32;
 

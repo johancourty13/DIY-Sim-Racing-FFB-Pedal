@@ -278,9 +278,11 @@ float IRAM_ATTR_FLAG MoveByRudderStrategy(
   // travel-end angles only change with the configuration: cached (exact, see PedalGeometry.h)
   static PedalAngleCache_t s_rudderAngleAtMinSledCache_st;
   static PedalAngleCache_t s_rudderAngleAtMaxSledCache_st;
-  float angleAtMinSled_deg = pedalInclineAngleDegCached(minSledPos_mm, config_st, s_rudderAngleAtMinSledCache_st);
-  float angleAtMaxSled_deg = pedalInclineAngleDegCached(maxSledPos_mm, config_st, s_rudderAngleAtMaxSledCache_st);
-  float currentAngle_deg = pedalInclineAngleDeg(actualSledPos_mm, config_st);
+  // geometry reference is the physical min endstop: add the travel start offset
+  const float sledOffset_mm = sledOffsetFromHardMinInMM(stepper, config_st, motorRevolutionsPerSteps_lcl_fl32);
+  float angleAtMinSled_deg = pedalInclineAngleDegCached(sledOffset_mm + minSledPos_mm, config_st, s_rudderAngleAtMinSledCache_st);
+  float angleAtMaxSled_deg = pedalInclineAngleDegCached(sledOffset_mm + maxSledPos_mm, config_st, s_rudderAngleAtMaxSledCache_st);
+  float currentAngle_deg = pedalInclineAngleDeg(sledOffset_mm + actualSledPos_mm, config_st);
 
   float leverArm_m =
       ((float)config_st->payloadPedalConfig_st.lengthPedalB_i16 +
